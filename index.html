@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Vida RPG — A Jornada do ENEM</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- Tela inicial: criação de personagem -->
+    <section id="screen-onboarding" class="screen">
+      <div class="card onboard-card">
+        <h1 class="title">Vida <span class="accent">RPG</span></h1>
+        <p class="subtitle">Sua vida é um jogo. Sua primeira missão: conquistar o ENEM.</p>
+
+        <label class="field">
+          <span>Nome do herói</span>
+          <input id="input-name" type="text" placeholder="Ex: Daniel, o Estudante" maxlength="24" />
+        </label>
+
+        <label class="field">
+          <span>Classe inicial</span>
+          <select id="input-class">
+            <option value="aprendiz">Aprendiz — equilíbrio em tudo</option>
+            <option value="erudito">Erudito — +Inteligência</option>
+            <option value="monge">Monge — +Disciplina</option>
+            <option value="bardo">Bardo — +Carisma (Redação)</option>
+          </select>
+        </label>
+
+        <button id="btn-start" class="btn primary">Iniciar Jornada</button>
+      </div>
+    </section>
+
+    <!-- Tela principal do jogo -->
+    <section id="screen-game" class="screen hidden">
+      <header class="topbar">
+        <div class="hero">
+          <div class="avatar" id="avatar">🧙</div>
+          <div class="hero-info">
+            <div class="hero-line">
+              <strong id="hero-name">—</strong>
+              <span class="muted" id="hero-class">—</span>
+              <span class="badge" id="hero-level">Nv. 1</span>
+            </div>
+            <div class="xpbar" title="Experiência">
+              <div class="xpbar-fill" id="xpbar-fill"></div>
+              <span class="xpbar-text" id="xpbar-text">0 / 100 XP</span>
+            </div>
+          </div>
+        </div>
+        <div class="stats">
+          <div class="stat hp" title="Vitalidade">
+            <span class="stat-ico">❤️</span>
+            <div class="stat-body">
+              <div class="bar"><div class="bar-fill" id="hp-fill"></div></div>
+              <span id="hp-text">100/100</span>
+            </div>
+          </div>
+          <div class="stat mp" title="Energia / Foco">
+            <span class="stat-ico">⚡</span>
+            <div class="stat-body">
+              <div class="bar"><div class="bar-fill" id="mp-fill"></div></div>
+              <span id="mp-text">50/50</span>
+            </div>
+          </div>
+          <div class="stat coin" title="Moedas">
+            <span class="stat-ico">🪙</span>
+            <span id="coins-text">0</span>
+          </div>
+          <div class="stat streak" title="Sequência de dias">
+            <span class="stat-ico">🔥</span>
+            <span id="streak-text">0d</span>
+          </div>
+        </div>
+      </header>
+
+      <nav class="tabs">
+        <button class="tab active" data-tab="status">Status</button>
+        <button class="tab" data-tab="missoes">Missões</button>
+        <button class="tab" data-tab="npcs">NPCs</button>
+        <button class="tab" data-tab="bosses">Bosses</button>
+        <button class="tab" data-tab="inventario">Inventário</button>
+        <button class="tab" data-tab="diario">Diário</button>
+      </nav>
+
+      <main class="content">
+        <section id="tab-status" class="tabpane active"></section>
+        <section id="tab-missoes" class="tabpane"></section>
+        <section id="tab-npcs" class="tabpane"></section>
+        <section id="tab-bosses" class="tabpane"></section>
+        <section id="tab-inventario" class="tabpane"></section>
+        <section id="tab-diario" class="tabpane"></section>
+      </main>
+
+      <footer class="footbar">
+        <button class="btn ghost" id="btn-rest">💤 Descansar</button>
+        <button class="btn ghost" id="btn-reset">↺ Reiniciar jogo</button>
+        <span class="muted small">Salvo localmente · <span id="save-status">ok</span></span>
+      </footer>
+    </section>
+
+    <!-- Modal genérico -->
+    <div id="modal" class="modal hidden">
+      <div class="modal-backdrop"></div>
+      <div class="modal-card" id="modal-card"></div>
+    </div>
+
+    <!-- Toast -->
+    <div id="toast-container"></div>
+  </div>
+
+  <script src="data.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
