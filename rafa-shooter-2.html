@@ -100,8 +100,10 @@
   #stick{position:absolute; left:18px; bottom:18px; width:130px; height:130px; border-radius:50%; background:rgba(0,245,255,.07); border:2px solid rgba(0,245,255,.35); touch-action:none;}
   #stickKnob{position:absolute; left:35px; top:35px; width:60px; height:60px; border-radius:50%; background:rgba(0,245,255,.4); box-shadow:0 0 18px var(--neon);}
   .tbtn{position:absolute; border-radius:50%; border:2px solid; display:flex; align-items:center; justify-content:center; font-family:'Orbitron'; font-weight:700; touch-action:none;}
-  #tUlt{right:24px; bottom:140px; width:78px; height:78px; border-color:var(--gold); color:var(--gold); background:rgba(255,210,63,.12); font-size:13px;}
-  #tBomb{right:118px; bottom:40px; width:64px; height:64px; border-color:var(--pink); color:var(--pink); background:rgba(255,43,214,.12); font-size:22px;}
+  #tFire{right:24px; bottom:30px; width:96px; height:96px; border-color:var(--neon); color:var(--neon); background:rgba(0,245,255,.14); font-size:16px;}
+  #tFire:active{background:rgba(0,245,255,.45);}
+  #tUlt{right:140px; bottom:150px; width:74px; height:74px; border-color:var(--gold); color:var(--gold); background:rgba(255,210,63,.12); font-size:13px;}
+  #tBomb{right:140px; bottom:50px; width:64px; height:64px; border-color:var(--pink); color:var(--pink); background:rgba(255,43,214,.12); font-size:22px;}
 
   .stat-line{display:flex; justify-content:space-between; width:min(92vw,440px); padding:7px 4px; border-bottom:1px solid rgba(255,255,255,.08); font-size:14px;}
   .stat-line b{color:var(--neon); font-family:'Orbitron';}
@@ -145,6 +147,7 @@
   <!-- touch -->
   <div id="touch">
     <div id="stick"><div id="stickKnob"></div></div>
+    <div class="tbtn" id="tFire">FIRE</div>
     <div class="tbtn" id="tUlt">ULT</div>
     <div class="tbtn" id="tBomb">💣</div>
   </div>
@@ -214,11 +217,11 @@
     <h1 class="logo" style="font-size:clamp(26px,6vw,46px)">COMO JOGAR</h1>
     <div class="scroll" style="margin-top:14px;">
       <div class="stat-line"><span>Mover</span><b>WASD / Setas / Joystick</b></div>
-      <div class="stat-line"><span>Atirar</span><b>Automático (mira no movimento)</b></div>
-      <div class="stat-line"><span>Ultimate</span><b>ESPAÇO / botão ULT</b></div>
+      <div class="stat-line"><span>Atirar</span><b>Segure ESPAÇO / ↑ / clique / FIRE</b></div>
+      <div class="stat-line"><span>Ultimate</span><b>Q / botão ULT</b></div>
       <div class="stat-line"><span>Bomba (limpa tela)</span><b>SHIFT / 💣</b></div>
       <div class="stat-line"><span>Pausar</span><b>ESC / P</b></div>
-      <div class="stat-line"><span>Mouse</span><b>A nave segue o cursor</b></div>
+      <div class="stat-line"><span>Mouse</span><b>A nave segue o cursor · clique atira</b></div>
       <p class="tagline" style="margin-top:18px;">Suba de nível pegando orbes de XP e escolha upgrades. Encha a barra de ULT acertando inimigos. A cada 5 ondas surge um CHEFÃO. Mantenha o combo alto para multiplicar pontos e créditos!</p>
     </div>
     <button class="btn sm" style="margin-top:14px;" onclick="UI.go('menu')">← Voltar</button>
@@ -466,20 +469,24 @@ const RAR_COL = { common:'#b8c4dc', rare:'#3dff8b', epic:'#9d4bff' };
    INPUT
    ============================================================ */
 const Input = {
-  keys:{}, mouse:{x:null,y:null,active:false},
-  stick:{x:0,y:0,active:false},
+  keys:{}, mouse:{x:null,y:null,active:false,down:false},
+  stick:{x:0,y:0,active:false}, touchFire:false,
+  // tiro manual, inspirado no primeiro jogo: segurar para atirar
+  get firing(){ return !!this.keys[' '] || !!this.keys['arrowup'] || this.mouse.down || this.touchFire; },
   init(){
     addEventListener('keydown', e=>{
       this.keys[e.key.toLowerCase()]=true;
       if([' ','arrowup','arrowdown','arrowleft','arrowright'].includes(e.key.toLowerCase())) e.preventDefault();
       const k=e.key.toLowerCase();
-      if(k===' ') Game.tryUlt();
+      if(k==='q') Game.tryUlt();
       if(k==='shift') Game.tryBomb();
       if(k==='escape'||k==='p') Game.togglePause();
     });
     addEventListener('keyup', e=>{ this.keys[e.key.toLowerCase()]=false; });
     canvas.addEventListener('mousemove', e=>{ this.mouse.x=e.clientX; this.mouse.y=e.clientY; this.mouse.active=true; });
-    canvas.addEventListener('mouseleave', ()=>{ this.mouse.active=false; });
+    canvas.addEventListener('mouseleave', ()=>{ this.mouse.active=false; this.mouse.down=false; });
+    canvas.addEventListener('mousedown', e=>{ if(e.button===0){ this.mouse.down=true; Audio.init(); } });
+    addEventListener('mouseup', e=>{ if(e.button===0) this.mouse.down=false; });
     this.initTouch();
   },
   initTouch(){
@@ -500,6 +507,10 @@ const Input = {
     addEventListener('touchend', e=>{
       for(const t of e.changedTouches){ if(t.identifier===id){ id=null; this.stick.active=false; this.stick.x=0; this.stick.y=0; knob.style.left='35px'; knob.style.top='35px'; }}
     });
+    const fire=document.getElementById('tFire');
+    fire.addEventListener('touchstart', e=>{ this.touchFire=true; fire.style.opacity='1'; Audio.init(); e.preventDefault(); },{passive:false});
+    fire.addEventListener('touchend',  e=>{ this.touchFire=false; fire.style.opacity=''; e.preventDefault(); },{passive:false});
+    fire.addEventListener('touchcancel',()=>{ this.touchFire=false; fire.style.opacity=''; });
     document.getElementById('tUlt').addEventListener('touchstart', e=>{ Game.tryUlt(); e.preventDefault(); },{passive:false});
     document.getElementById('tBomb').addEventListener('touchstart', e=>{ Game.tryBomb(); e.preventDefault(); },{passive:false});
   }
@@ -706,8 +717,10 @@ class Player {
 
     this.cd-=dt*16; this.inv=Math.max(0,this.inv-dt); this.shield=Math.max(0,this.shield-dt);
     this.rapid=Math.max(0,this.rapid-dt); this.flameT+=dt;
+    // tiro MANUAL, inspirado no primeiro jogo: dispara enquanto o jogador segura,
+    // respeitando o cooldown da nave (sem auto-fire).
     let fr=this.fireRate; if(this.rapid>0) fr*=0.45; if(Game.overdrive>0) fr*=0.35;
-    if(this.cd<=0){ this.shoot(); this.cd=fr/16; }
+    if(this.cd<=0 && Input.firing){ this.shoot(); this.cd=fr/16; }
     for(const d of this.drones) d.update(dt);
     // engine trail
     FX.trail(this.x,this.y+this.r,this.col);
