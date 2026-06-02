@@ -16533,6 +16533,374 @@ function checkExtendedAchievements() {
      ─────────────────────────────────────────────────────────────────────── */
 })();
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   ███  ENHANCEMENT PACK v3 — MENU + GAMEPLAY  ███
+   Navegação de menu por teclado/gamepad, foco visual e ambiance no título;
+   e melhorias de gameplay: DASH com i-frames e COMBO OVERDRIVE.
+   Tudo aditivo, em escopo próprio, com fallback seguro.
+   ═══════════════════════════════════════════════════════════════════════════ */
+(function ENHANCE_MENU_GAMEPLAY(){
+  'use strict';
+  const G=(typeof window!=='undefined')?window:this;
+  const S=(typeof State!=='undefined')?State:(G.State||{});
+  const ENH=G.ENH||{};
+  function safe(fn){ try{return fn();}catch(e){} }
+  function now(){ return (G.performance&&performance.now)?performance.now():Date.now(); }
+  const clmp=(v,a,b)=>v<a?a:v>b?b:v;
+  function canvasEl(){ return G.CANVAS||document.getElementById('gameCanvas'); }
+  function play(name){ safe(()=>{ if(typeof playSound==='function') playSound(name); }); }
+  function uisfx(t){ safe(()=>{ if(ENH.sfx) ENH.sfx(t); }); }
+
+  // ── preferências (reaproveita as do v2) ──────────────────────────────────
+  const prefs = ENH.prefs || {};
+  if(prefs.overdrive===undefined) prefs.overdrive=true;
+  if(prefs.menuNav===undefined) prefs.menuNav=true;
+  function savePrefs(){ safe(()=>localStorage.setItem('rpshooter_enhance_prefs', JSON.stringify(prefs))); }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // #105 ESTILO de MENU aprimorado: foco, botões, layout, animações
+  // ─────────────────────────────────────────────────────────────────────────
+  const st=document.createElement('style');
+  st.textContent=`
+    /* #106 anel de foco navegável (teclado/gamepad) */
+    .enh-focus{ outline:none !important;
+      box-shadow:0 0 0 2px #00f5ff, 0 0 22px rgba(0,245,255,0.65), inset 0 0 12px rgba(0,245,255,0.15) !important;
+      transform:translateY(-1px) scale(1.015) !important; transition:all .12s ease !important; }
+    /* #107 botões do menu com brilho dinâmico ao passar o mouse/foco */
+    #titleScreen button, .overlay button{ position:relative; }
+    /* #108 título com leve respiração de escala */
+    @keyframes enhTitleFloat{ 0%,100%{transform:translateY(0);} 50%{transform:translateY(-4px);} }
+    .title-left>div:first-child{ animation:titlePulse 3s ease-in-out infinite, enhTitleFloat 6s ease-in-out infinite; }
+    /* #109 realce nas linhas de high-score */
+    .hs-row{ transition:background .2s; }
+    .hs-row:hover{ background:rgba(0,245,255,0.06); }
+    /* #110 dica de navegação no rodapé do menu */
+    #enhMenuHint{ position:fixed; bottom:8px; left:50%; transform:translateX(-50%); z-index:11;
+      font-family:Rajdhani,sans-serif; font-size:11px; letter-spacing:1px; color:rgba(0,245,255,0.45);
+      pointer-events:none; opacity:0; transition:opacity .3s; text-align:center; }
+    /* #111 botão de DASH (mobile) */
+    #enhDashBtn{ position:fixed; bottom:90px; right:18px; z-index:650; width:64px; height:64px; border-radius:50%;
+      background:rgba(0,245,255,0.12); border:2px solid #00f5ff; color:#00f5ff; font-family:Orbitron,monospace;
+      font-size:11px; font-weight:900; display:none; align-items:center; justify-content:center; cursor:pointer;
+      box-shadow:0 0 18px rgba(0,245,255,0.4); -webkit-user-select:none; user-select:none; touch-action:none; }
+    #enhDashBtn.cooldown{ opacity:0.35; border-color:#445; color:#445; box-shadow:none; }
+    /* #112 medidor de dash no HUD de melhorias */
+    #enhDashMeter{ margin-top:4px; }
+  `;
+  (document.head||document.documentElement).appendChild(st);
+
+  const menuHint=document.createElement('div');
+  menuHint.id='enhMenuHint';
+  menuHint.innerHTML='↑↓ navegar · Enter selecionar · gamepad suportado';
+  function mountHint(){ if(document.body && !menuHint.parentNode) document.body.appendChild(menuHint); }
+  if(document.body) mountHint(); else G.addEventListener('DOMContentLoaded', mountHint);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // #113 NAVEGAÇÃO DE MENU (teclado + gamepad) com foco visual
+  // ─────────────────────────────────────────────────────────────────────────
+  let focusIdx=-1, navButtons=[], lastContainer=null;
+  function visible(el){
+    if(!el) return false;
+    if(el.offsetParent===null && el.style.display==='none') return false;
+    const r=el.getBoundingClientRect();
+    return r.width>0 && r.height>0 && getComputedStyle(el).visibility!=='hidden';
+  }
+  function activeContainer(){
+    // overlay ativo tem prioridade
+    const ovs=document.querySelectorAll('.overlay.active');
+    for(const o of ovs){ if(visible(o)) return o; }
+    const title=document.getElementById('titleScreen');
+    if(title && visible(title)) return title;
+    return null;
+  }
+  function refreshButtons(){
+    const c=activeContainer();
+    if(c!==lastContainer){ clearFocus(); lastContainer=c; focusIdx=-1; }
+    if(!c){ navButtons=[]; menuHint.style.opacity='0'; return; }
+    navButtons=Array.prototype.filter.call(c.querySelectorAll('button'), b=>visible(b) && !b.disabled);
+    menuHint.style.opacity = (prefs.menuNav && navButtons.length>1) ? '1':'0';
+  }
+  function clearFocus(){ navButtons.forEach(b=>b.classList.remove('enh-focus')); }
+  function applyFocus(){
+    clearFocus();
+    if(focusIdx>=0 && navButtons[focusIdx]){
+      navButtons[focusIdx].classList.add('enh-focus');
+      safe(()=>navButtons[focusIdx].scrollIntoView({block:'nearest',behavior:'smooth'}));
+    }
+  }
+  function moveFocus(dir){
+    if(!navButtons.length) return;
+    if(focusIdx<0) focusIdx = dir>0?0:navButtons.length-1;
+    else focusIdx = (focusIdx+dir+navButtons.length)%navButtons.length;
+    applyFocus(); uisfx('hover');
+  }
+  function activateFocus(){
+    if(focusIdx>=0 && navButtons[focusIdx]){ uisfx('ui'); navButtons[focusIdx].click(); setTimeout(refreshButtons,60); }
+  }
+  function backFocus(){
+    // procura botão de voltar/cancelar
+    const back=navButtons.find(b=>/back|voltar|menu|skip|close|fechar|cancel/i.test(b.textContent||''));
+    if(back){ uisfx('ui'); back.click(); setTimeout(refreshButtons,60); }
+  }
+
+  // teclado de menu (só quando não está jogando ativamente)
+  G.addEventListener('keydown',(e)=>{
+    if(!prefs.menuNav) return;
+    if(S.running && !S.paused) return; // durante o jogo, setas controlam a nave
+    const c=activeContainer(); if(!c) return;
+    const tag=(e.target&&e.target.tagName)||'';
+    if(/INPUT|TEXTAREA|SELECT/.test(tag)) return;
+    const k=e.key;
+    if(k==='ArrowDown'||k==='ArrowRight'){ refreshButtons(); moveFocus(1); e.preventDefault(); }
+    else if(k==='ArrowUp'||k==='ArrowLeft'){ refreshButtons(); moveFocus(-1); e.preventDefault(); }
+    else if(k==='Enter'||k===' '){ if(focusIdx>=0){ activateFocus(); e.preventDefault(); } }
+    else if(k==='Escape'){ backFocus(); }
+  }, true);
+
+  // remove foco ao usar o mouse (#114)
+  G.addEventListener('mousemove', ()=>{ if(focusIdx>=0){ clearFocus(); focusIdx=-1; } }, {passive:true});
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // #115 GAMEPAD: navegação de menu + confirmar/voltar (edge-triggered)
+  // ─────────────────────────────────────────────────────────────────────────
+  let padPrev={};
+  function pollMenuGamepad(){
+    if(!prefs.menuNav) return;
+    if(S.running && !S.paused) return;
+    const pads = safe(()=>navigator.getGamepads&&navigator.getGamepads())||[];
+    let gp=null; for(const p of pads){ if(p){ gp=p; break; } }
+    if(!gp){ return; }
+    const c=activeContainer(); if(!c){ return; }
+    refreshButtons();
+    const ax=gp.axes[1]||0;
+    const down = (gp.buttons[13]&&gp.buttons[13].pressed) || ax>0.5;
+    const up   = (gp.buttons[12]&&gp.buttons[12].pressed) || ax<-0.5;
+    const confirm = gp.buttons[0]&&gp.buttons[0].pressed;
+    const back = gp.buttons[1]&&gp.buttons[1].pressed;
+    const edge=(name,val)=>{ const was=padPrev[name]; padPrev[name]=val; return val&&!was; };
+    if(edge('down',down)) moveFocus(1);
+    if(edge('up',up)) moveFocus(-1);
+    if(edge('confirm',confirm)) activateFocus();
+    if(edge('back',back)) backFocus();
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // #116 AMBIANCE no menu: faíscas/estrelas cadentes suaves no título
+  // ─────────────────────────────────────────────────────────────────────────
+  let lastAmb=0;
+  function titleAmbiance(){
+    const title=document.getElementById('titleScreen');
+    if(!title || !visible(title)) return;
+    if(!prefs.fx) return;
+    if(now()-lastAmb<140) return; lastAmb=now();
+    const W=G.innerWidth, H=G.innerHeight;
+    // partícula flutuante lenta
+    if(ENH.emit) ENH.emit(Math.random()*W, H+10, {vx:rnd(-0.2,0.2), vy:rnd(-1.4,-0.6), life:rnd(1.2,2.4), size:rnd(1,2.5), color:Math.random()<0.5?'#00f5ff':'#7b2fff', drag:0.99, grav:-0.002});
+    // estrela cadente ocasional
+    if(Math.random()<0.12 && ENH.emit){
+      const sx=Math.random()*W, sy=Math.random()*H*0.4;
+      for(let i=0;i<8;i++) ENH.emit(sx-i*6, sy+i*3, {vx:rnd(3,5), vy:rnd(1.5,2.5), life:0.5-i*0.03, size:2, color:'#bfefff', drag:0.92});
+    }
+  }
+  const rnd=(a,b)=>a+Math.random()*(b-a);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // #117 GAMEPLAY: DASH / ESQUIVA com i-frames (usa campos invincible já existentes)
+  // ─────────────────────────────────────────────────────────────────────────
+  const DASH = { speed: 1400, time: 0.16, cooldown: 1100, iframes: 320 };
+  function players(){ return (S.players&&S.players.length)?S.players:[]; }
+  function tryDash(p){
+    if(!p || p.lives<=0) return;
+    const t=now();
+    if(p._dashUntil && t<p._dashUntil) return;          // já em dash
+    if(p._dashCdUntil && t<p._dashCdUntil) return;       // em recarga
+    // direção a partir das teclas de movimento
+    let dx=(p.isMovingRight?1:0)-(p.isMovingLeft?1:0);
+    let dy=0;
+    if(S.openWorldMode) dy=(p.isMovingDown?1:0)-(p.isMovingUp?1:0);
+    if(dx===0 && dy===0){ dx = p._lastDir|| (p.index===1?-1:1); if(S.openWorldMode){ dy=-1; dx=0; } }
+    const mag=Math.hypot(dx,dy)||1; dx/=mag; dy/=mag;
+    p._dashVX=dx*DASH.speed; p._dashVY=dy*DASH.speed;
+    p._dashUntil=t+DASH.time*1000;
+    p._dashCdUntil=t+DASH.cooldown;
+    p.invincible=true; p.invincibleEnd=Math.max(p.invincibleEnd||0, t+DASH.iframes);
+    // efeitos
+    play('abilitySound');
+    const cx=p.x+(p.width||40)/2, cy=p.y+(p.height||40)/2;
+    if(ENH.burst) ENH.burst(cx,cy, p.index===1?'#ff7700':'#00f5ff', 16, 6);
+    if(ENH.shockRing) ENH.shockRing(cx,cy, p.index===1?'#ff7700':'#00f5ff', 80, 3);
+    if(ENH.addShake) ENH.addShake(3);
+  }
+  function updateDash(dt){
+    const c=canvasEl(); const t=now();
+    players().forEach(p=>{
+      if(!p) return;
+      // memoriza última direção horizontal
+      if(p.isMovingRight) p._lastDir=1; else if(p.isMovingLeft) p._lastDir=-1;
+      if(p._dashUntil && t<p._dashUntil){
+        const f=dt; // segundos
+        let nx=p.x + (p._dashVX||0)*f;
+        let ny=p.y + (p._dashVY||0)*f;
+        const w=p.width||50, h=p.height||50;
+        if(S.openWorldMode){
+          nx=clmp(nx,0,(S.worldWidth||6000)-w);
+          ny=clmp(ny,0,(S.worldHeight||6000)-h);
+        } else if(c){
+          nx=clmp(nx,0,c.width-w);
+          // mantém o jogador na sua faixa vertical (não some pela tela)
+          ny=clmp(ny, c.height*0.25, c.height-h);
+        }
+        p.x=nx; p.y=ny;
+        // rastro de dash
+        if(ENH.emit && prefs.fx) ENH.emit(p.x+w/2, p.y+h/2, {vx:rnd(-0.5,0.5),vy:rnd(-0.5,0.5),life:0.3,size:rnd(3,5),color:p.index===1?'#ffae66':'#88f0ff',drag:0.9});
+      }
+    });
+  }
+
+  // teclas de dash: Shift (P1), '/' ou '.' (P2 local opcional)
+  G.addEventListener('keydown',(e)=>{
+    if(!S.running||S.paused) return;
+    const k=e.key;
+    if(k==='Shift'||e.code==='ShiftLeft'||e.code==='ShiftRight'){ const p=players()[0]; if(p) tryDash(p); }
+    else if(S.twoPlayer && (k==='/'||k==='.')){ const p=players()[1]; if(p) tryDash(p); }
+  });
+
+  // botão de dash (mobile) — aparece quando o jogo roda em touch
+  const dashBtn=document.createElement('div');
+  dashBtn.id='enhDashBtn'; dashBtn.textContent='DASH';
+  function mountDash(){ if(document.body&&!dashBtn.parentNode) document.body.appendChild(dashBtn); }
+  if(document.body) mountDash(); else G.addEventListener('DOMContentLoaded', mountDash);
+  const isTouch = ('ontouchstart' in G) || (navigator.maxTouchPoints>0);
+  function fireDashBtn(ev){ ev.preventDefault(); const p=players()[0]; if(p) tryDash(p); }
+  dashBtn.addEventListener('touchstart', fireDashBtn, {passive:false});
+  dashBtn.addEventListener('mousedown', fireDashBtn);
+
+  // #118 indicador de recarga do dash no HUD de melhorias (canto sup. dir.)
+  const dashMeter=document.createElement('div');
+  dashMeter.id='enhDashMeter';
+  dashMeter.style.cssText='font-family:Orbitron,monospace;font-size:10px;color:#00f5ff;text-align:right;';
+  // será preenchido no loop
+
+  function updateDashHud(){
+    const p=players()[0];
+    const showTouch = isTouch && S.running && !S.paused;
+    dashBtn.style.display = showTouch?'flex':'none';
+    if(!p || !S.running){ return; }
+    const t=now();
+    const ready = !(p._dashCdUntil && t<p._dashCdUntil);
+    if(showTouch){ dashBtn.classList.toggle('cooldown', !ready); }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // #119 GAMEPLAY: COMBO OVERDRIVE — tiros bônus em leque ao manter combo alto
+  // (wrap em Player.prototype.shoot; 100% aditivo, só dispara se houve tiro)
+  // ─────────────────────────────────────────────────────────────────────────
+  safe(()=>{
+    if(typeof Player==='function' && Player.prototype && Player.prototype.shoot && typeof PlayerBullet==='function'){
+      const _shoot=Player.prototype.shoot;
+      Player.prototype.shoot=function(){
+        const before=this.bullets?this.bullets.length:0;
+        const r=_shoot.apply(this,arguments);
+        safe(()=>{
+          if(!prefs.overdrive) return;
+          if(!this.bullets || this.bullets.length<=before) return; // não atirou (cooldown/laser)
+          const combo=S.comboKills||0;
+          if(combo<8) return;
+          const cx=this.x+this.width/2;
+          const pvpFlip=S.pvpMode && this.index===1;
+          const dir=pvpFlip?1:-1;
+          const sy=pvpFlip? this.y+this.height : this.y;
+          const tier = combo>=30?3 : combo>=20?2 : 1;
+          for(let i=1;i<=tier;i++){
+            this.bullets.push(new PlayerBullet(cx, sy, this.bulletColor, -0.3*i, (this.damageMultiplier||1)*0.7, dir));
+            this.bullets.push(new PlayerBullet(cx, sy, this.bulletColor,  0.3*i, (this.damageMultiplier||1)*0.7, dir));
+          }
+        });
+        return r;
+      };
+    }
+  });
+
+  // #120 aura de overdrive: brilho discreto quando o combo está alto
+  let overdriveOn=false;
+  function watchOverdrive(){
+    const combo=S.comboKills||0;
+    const on = prefs.overdrive && S.running && combo>=8;
+    if(on && !overdriveOn){ if(ENH.banner&&combo>=8) {} if(ENH.toast && combo===8) ENH.toast('⚡ OVERDRIVE — tiro reforçado!','#ffd700'); }
+    overdriveOn=on;
+    if(on){
+      players().forEach(p=>{ if(p&&p.lives>0 && prefs.fx && ENH.emit && Math.random()<0.4){
+        ENH.emit(p.x+(p.width||40)*Math.random(), p.y+(p.height||40), {vx:rnd(-0.4,0.4),vy:rnd(0.4,1),life:0.4,size:rnd(1.5,3),color:'#ffd700',drag:0.94});
+      }});
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // #121 toggles extras no painel de engrenagem (Overdrive / Navegação de menu)
+  // ─────────────────────────────────────────────────────────────────────────
+  function addGearToggles(){
+    const panel=document.getElementById('enhPanel');
+    if(!panel || panel._v3) return; panel._v3=true;
+    const mk=(label,get,set)=>{
+      const row=document.createElement('label');
+      row.style.cssText='display:flex;align-items:center;justify-content:space-between;font-size:14px;cursor:pointer;gap:10px;';
+      const span=document.createElement('span'); span.textContent=label;
+      const cb=document.createElement('input'); cb.type='checkbox'; cb.checked=!!get();
+      cb.style.cssText='width:18px;height:18px;accent-color:#00f5ff;cursor:pointer;';
+      cb.onchange=()=>{ set(cb.checked); uisfx('ui'); };
+      row.appendChild(span); row.appendChild(cb);
+      // insere antes da dica/slider final
+      panel.appendChild(row);
+    };
+    mk('Combo Overdrive', ()=>prefs.overdrive, v=>{prefs.overdrive=v;savePrefs();});
+    mk('Navegação por teclado/pad', ()=>prefs.menuNav, v=>{prefs.menuNav=v;savePrefs();});
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // #122 Atualiza a tela de CONTROLES com os novos comandos (se existir)
+  // ─────────────────────────────────────────────────────────────────────────
+  function patchInstructions(){
+    const scr=document.getElementById('instructionsScreen');
+    if(!scr || scr._v3) return; scr._v3=true;
+    const box=document.createElement('div');
+    box.style.cssText='margin:10px 0;padding:10px 12px;border:1px solid rgba(0,245,255,0.25);background:rgba(0,245,255,0.05);font-family:Rajdhani,sans-serif;font-size:13px;line-height:1.7;color:#cfefff;text-align:left;';
+    box.innerHTML='<b style="color:#00f5ff;font-family:Orbitron,monospace;font-size:11px;letter-spacing:1px;">NOVOS COMANDOS</b><br>'+
+      '⚡ <b>SHIFT</b> — Dash/esquiva com invencibilidade breve<br>'+
+      '🎯 <b>Combo ×8+</b> — Overdrive: tiros bônus em leque<br>'+
+      '🎮 <b>Menus</b> — Setas/Gamepad navegam, Enter/✕ confirma<br>'+
+      '🔊 <b>M</b> música · <b>N</b> efeitos · <b>F</b> FPS · <b>E</b> opções';
+    const btn=scr.querySelector('button');
+    if(btn) scr.insertBefore(box, btn); else scr.appendChild(box);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // LOOP próprio (#123)
+  // ─────────────────────────────────────────────────────────────────────────
+  let lastT=now();
+  function loop(){
+    const t=now(); let dt=(t-lastT)/1000; lastT=t; if(dt>0.1)dt=0.1;
+    safe(()=>{
+      addGearToggles();
+      patchInstructions();
+      if(!(S.running && !S.paused)){
+        refreshButtons(); pollMenuGamepad(); titleAmbiance();
+      } else {
+        menuHint.style.opacity='0'; clearFocus(); focusIdx=-1;
+      }
+      updateDash(dt);
+      updateDashHud();
+      watchOverdrive();
+    });
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+
+  // expõe alguns utilitários
+  G.ENH = Object.assign(G.ENH||{}, { dash:(i)=>tryDash(players()[i||0]), prefs });
+
+  setTimeout(()=>{ safe(()=>{ if(ENH.toast) ENH.toast('🎮 Menu navegável + Dash (Shift) ativos','#39ff14'); }); }, 2600);
+})();
+
 </script>
 
 <!-- ═══ OPEN WORLD EXPANSION HTML OVERLAYS ═══ -->
