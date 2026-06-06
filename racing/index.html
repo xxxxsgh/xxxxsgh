@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#0d1117" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <title>Drift Rush — Corrida Top-Down</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="game-root">
+    <canvas id="game"></canvas>
+
+    <!-- HUD -->
+    <div id="hud" class="hidden">
+      <div class="hud-row hud-top">
+        <div class="hud-chip">
+          <span class="hud-label">VOLTA</span>
+          <span id="hud-lap" class="hud-value">1/3</span>
+        </div>
+        <div class="hud-chip">
+          <span class="hud-label">TEMPO</span>
+          <span id="hud-time" class="hud-value">0.00</span>
+        </div>
+        <div class="hud-chip">
+          <span class="hud-label">MELHOR</span>
+          <span id="hud-best" class="hud-value">--.--</span>
+        </div>
+      </div>
+      <div class="hud-row hud-speed">
+        <span id="hud-speed" class="hud-value">0</span><span class="hud-unit">km/h</span>
+        <span id="hud-drift" class="drift-tag">DRIFT!</span>
+      </div>
+    </div>
+
+    <!-- Controles touch -->
+    <div id="touch-controls" class="hidden">
+      <div class="pad-left">
+        <button class="ctrl steer" id="btn-left" aria-label="Esquerda">‹</button>
+        <button class="ctrl steer" id="btn-right" aria-label="Direita">›</button>
+      </div>
+      <div class="pad-right">
+        <button class="ctrl brake" id="btn-brake" aria-label="Freio / Drift">DRIFT</button>
+        <button class="ctrl gas" id="btn-gas" aria-label="Acelerar">GÁS</button>
+      </div>
+    </div>
+
+    <!-- Menu / telas -->
+    <div id="overlay" class="overlay">
+      <div class="panel">
+        <h1 class="logo">DRIFT <span>RUSH</span></h1>
+        <p class="tagline">Corrida top-down com física de derrapagem.</p>
+        <p class="hint" id="overlay-msg">Segure <b>GÁS</b> para acelerar e <b>DRIFT</b> nas curvas para deslizar.<br/>Passe por todos os checkpoints e complete as voltas!</p>
+        <button id="btn-play" class="big-btn">CORRER</button>
+        <p class="controls-note desktop-only">No PC: ↑ acelerar · ↓ freio · ← → virar · ESPAÇO drift</p>
+      </div>
+    </div>
+  </div>
+
+  <script src="game.js"></script>
+</body>
+</html>
