@@ -138,8 +138,10 @@ input.sel::placeholder{color:var(--mut)}
 "use strict";
 /* ============================================================================
    FM MUNDIAL — Football Manager (single-file, vanilla JS, offline PWA)
-   Fase 1: Base de dados + Tabela + Simulação de partida + Temporada
-   (arquitetura preparada para Fases 2-4)
+   F1: Base de dados + Tabela + Simulação minuto-a-minuto + Temporada
+   F2: Mercado de transferências + Finanças + Evolução
+   F3: Competições continentais + Mundial de Clubes + Copa do Mundo
+   F4: Base/juniores + Imprensa + Carreira (diretoria) + Histórico + Polish
    ========================================================================== */
 
 /* ---------- RNG (seeded, determinístico p/ saves) ---------- */
@@ -469,13 +471,18 @@ function newGame(clubId, managerName){
     window:"Pré-temporada",
     transferLog:[],
     phase:"season",
+    boardConfidence:62, managerRep:60,
+    seasonExpectation:null,
   };
+  G.managerRep = clamp(myClub().rep-12, 38, 78);
   // gera calendário de cada liga
   G.leagues.forEach(L=>{ buildLeagueSchedule(L); initStandings(L); });
   // monta escalação inicial do clube do jogador (melhores por posição)
   autoPickLineup();
   G.comps=[]; buildCompetitions();
-  pushInbox("Bem-vindo!", "Você assumiu o comando do "+myClub().name+". Boa sorte na temporada "+G.season+"! Conquiste a torcida com bons resultados.");
+  genYouth(myClub(),6);
+  G.seasonExpectation=expectedRank();
+  pushInbox("Bem-vindo!", "Você assumiu o comando do "+myClub().name+". A diretoria espera você terminar por volta da "+ord(G.seasonExpectation)+" posição no "+leagueOf(myClub()).name+". Boa sorte!");
   saveGame(currentSlot());
   return G;
 }
@@ -483,7 +490,21 @@ function newGame(clubId, managerName){
 function myClub(){ return G.clubs.find(c=>c.id===G.clubId); }
 function clubById(id){ return G.clubs.find(c=>c.id===id); }
 function leagueById(id){ return G.leagues.find(l=>l.id===id); }
-function clubPlayers(cid){ return G.players.filter(p=>p.clubId===cid); }
+function clubPlayers(cid){ return G.players.filter(p=>p.clubId===cid && !p.youth); }
+function youthPlayers(cid){ return G.players.filter(p=>p.clubId===cid && p.youth); }
+function genYouth(club,n){
+  const out=[];
+  for(let i=0;i<n;i++){
+    const grp=pick(["GK","DF","DF","MF","MF","FW","FW"]);
+    const pos=pick(POS_GROUPS[grp]);
+    const base=clamp(Math.round(club.rep*0.5+6)+ri(-4,4),42,64);
+    const p=makePlayer(club,pos,base,{age:ri(15,18)});
+    p.pot=clamp(p.ovr+ri(6,26),p.ovr+4,96); // potencial alto e oculto
+    p.youth=true; p.wage=Math.round(p.wage*0.4);
+    G.players.push(p); out.push(p);
+  }
+  return out;
+}
 function leagueOf(club){ return leagueById(club.leagueId); }
 function curSymbol(cur){ return cur==="BRL"?"R$":"€"; }
 
@@ -786,6 +807,7 @@ function endMatch(){
   const myXI = meHome?M.hXI:M.aXI;
   const md = win?+6:(draw?0:-5);
   clubPlayers(G.clubId).forEach(p=>{ p.morale=clamp(p.morale+md+(myXI.includes(p)?2:0),10,99); });
+  if(!M.ctx) boardAfterMatch(win,draw); // diretoria reage a partidas de liga
   renderMatchEnd();
 }
 
@@ -1270,6 +1292,111 @@ function runWorldCup(){
 function natColors(nat){ return {BRA:["#fbe400","#1c8a3b"],ARG:["#87d8f7","#ffffff"],FRA:["#0a346f","#e2001a"],ENG:["#ffffff","#e2001a"],ESP:["#e2001a","#fbe400"],GER:["#000000","#fbe400"],ITA:["#0a52a0","#ffffff"],POR:["#e30613","#1c8a3b"],NED:["#f57b00","#ffffff"]}[nat]||["#888","#fff"]; }
 
 /* ============================================================================
+   FASE 4 — BASE/JUNIORES, IMPRENSA, CARREIRA (diretoria), POLISH
+   ========================================================================== */
+/* Expectativa da diretoria = posição-base pela reputação do clube na liga */
+function expectedRank(){
+  const c=myClub(); const L=leagueOf(c);
+  const order=L.clubIds.slice().sort((a,b)=>clubById(b).rep-clubById(a).rep);
+  const repRank=order.indexOf(c.id)+1;
+  return clamp(repRank, 1, L.clubIds.length);
+}
+/* Promoção de jovem ao elenco principal */
+function promoteYouth(pid){
+  const p=byId(pid); if(!p||!p.youth)return;
+  p.youth=false; p.age=Math.max(p.age,18); p.wage=Math.round(p.wage*1.6);
+  pushInbox("⬆️ Promovido à base", `${p.name} (${p.ovr}, pot. ${p.pot>p.ovr+3?'alto':'—'}) foi promovido ao elenco principal.`,"good");
+  saveGame(); render(); toast(`${p.name} promovido ao profissional!`);
+}
+/* Intake anual de juniores */
+function youthIntake(){
+  const club=myClub();
+  // forma jovens que viraram 19 podem ser auto-disponibilizados; promove os melhores 16-18
+  youthPlayers(club.id).forEach(p=>{ p.age++; if(p.ovr<p.pot)p.ovr=clamp(p.ovr+ri(1,4),p.ovr,p.pot); recalcFromOvr(p); p.value=playerValue(p.ovr,p.pot,p.age,club.cur); if(p.age>=20){ p.youth=false; } });
+  const intake=genYouth(club,ri(2,4));
+  const gem=intake.slice().sort((a,b)=>b.pot-a.pot)[0];
+  pushInbox("🎓 Nova safra da base", `${intake.length} jovens chegaram às categorias de base do ${club.name}.${gem&&gem.pot>=80?` Destaque: ${gem.name}, potencial promissor!`:''}`,"info");
+}
+
+/* Avaliação da diretoria após cada partida de liga */
+function boardAfterMatch(meWin, draw){
+  const exp=G.seasonExpectation||expectedRank();
+  const L=leagueOf(myClub());
+  const pos=tableOf(L).findIndex(c=>c.id===G.clubId)+1;
+  let d=0;
+  if(meWin)d+=2; else if(draw)d+=0; else d-=2;
+  // bônus/ônus por estar acima/abaixo da expectativa
+  if(pos<exp)d+=1; else if(pos>exp+3)d-=2;
+  G.boardConfidence=clamp(G.boardConfidence+d, 0, 100);
+  if(G.boardConfidence<=14 && !G.warned){ G.warned=true; pushInbox("⚠️ Pressão da diretoria", `A diretoria do ${myClub().name} está insatisfeita. Resultados precisam melhorar ou seu emprego estará em risco.`,"bad"); }
+  if(G.boardConfidence>20)G.warned=false;
+}
+/* Demissão / ofertas ao fim da temporada */
+function careerReview(finalPos){
+  const exp=G.seasonExpectation||expectedRank();
+  const c=myClub();
+  // ajusta reputação do treinador
+  if(finalPos<exp) G.managerRep=clamp(G.managerRep+ri(2,5),0,99);
+  else if(finalPos>exp+4) G.managerRep=clamp(G.managerRep-ri(2,4),0,99);
+  // demissão
+  if(G.boardConfidence<=12 || finalPos>exp+6){
+    return {sacked:true};
+  }
+  // oferta de clube maior se superou expectativa e tem reputação
+  if(finalPos<=Math.max(1,exp-2) && G.managerRep>=60){
+    const bigger=G.clubs.filter(x=>x.rep>c.rep+6 && x.id!==c.id).sort((a,b)=>a.rep-b.rep);
+    if(bigger.length && chance(0.6)){
+      const target=bigger[ri(0,Math.min(5,bigger.length-1))];
+      return {offer:target.id};
+    }
+  }
+  return {};
+}
+function switchClub(newId){
+  G.clubId=newId; G.boardConfidence=62; G.warned=false; G.managerRep=clamp(G.managerRep,40,99);
+  G.tactics.lineup=[]; autoPickLineup();
+  pushInbox("🤝 Novo desafio", `Você assumiu o comando do ${myClub().name}!`,"good");
+}
+
+/* ---- Coletiva de imprensa (pré-jogo) ---- */
+const PRESSERS=[
+  {q:"A imprensa questiona se seu time é favorito hoje. O que responde?",
+   a:[["Somos favoritos e vamos provar em campo",5,-2],["Respeito o adversário, mas confio no meu grupo",3,3],["Cada jogo é difícil, foco no trabalho",1,4]]},
+  {q:"Perguntam sobre a pressão por resultados. Sua resposta?",
+   a:[["Pressão é privilégio, estamos prontos",4,1],["Meu grupo está tranquilo e focado",2,4],["Não ligo para pressão externa",3,-1]]},
+  {q:"Indagam sobre um titular fora de forma. Como reage?",
+   a:[["Confio nele, vai reagir logo",2,5],["Todos precisam render mais",4,-3],["É um problema do grupo, resolveremos juntos",1,3]]},
+];
+let _presserCb=null;
+function maybePressConference(cb){
+  if(chance(0.45)){ _presserCb=cb; const pr=pick(PRESSERS); openPresser(pr); }
+  else cb();
+}
+function openPresser(pr){
+  modal(`<h2 style="margin-top:0">🎤 Coletiva de imprensa</h2>
+    <p class="small">${pr.q}</p>
+    ${pr.a.map((opt,i)=>`<button class="btn sec wide" style="margin:6px 0;text-align:left" onclick="answerPresser(${i})">${opt[0]}</button>`).join("")}
+    <input type="hidden" id="presserData" value='${JSON.stringify(pr.a).replace(/'/g,"&#39;")}'>`);
+}
+function answerPresser(i){
+  const a=JSON.parse($("presserData").value.replace(/&#39;/g,"'"));
+  const [,fanD,moraleD]=a[i];
+  clubPlayers(G.clubId).forEach(p=>p.morale=clamp(p.morale+moraleD,10,99));
+  G.boardConfidence=clamp(G.boardConfidence+Math.round(fanD/3),0,100);
+  closeModal();
+  toast(`Resposta repercutiu. Moral do elenco ${moraleD>=0?'+':''}${moraleD}`);
+  const cb=_presserCb; _presserCb=null; if(cb)setTimeout(cb,300);
+}
+
+/* ---- Seleção da temporada (team of the season) ---- */
+function teamOfSeason(L){
+  const ids=L.clubIds;
+  const pool=G.players.filter(p=>ids.includes(p.clubId));
+  const byGroup=g=>pool.filter(p=>p.posG===g).sort((a,b)=>(b.seasonStats.g*2+b.seasonStats.a+b.ovr*0.3)-(a.seasonStats.g*2+a.seasonStats.a+a.ovr*0.3));
+  return {GK:byGroup("GK").slice(0,1),DF:byGroup("DF").slice(0,4),MF:byGroup("MF").slice(0,3),FW:byGroup("FW").slice(0,3)};
+}
+
+/* ============================================================================
    UI
    ========================================================================== */
 const $=id=>document.getElementById(id);
@@ -1310,6 +1437,7 @@ const TABS=[
   {id:"comp",ic:"🏆",label:"Comp."},
   {id:"mercado",ic:"💱",label:"Mercado"},
   {id:"financas",ic:"💰",label:"Finanças"},
+  {id:"base",ic:"🎓",label:"Base"},
   {id:"calendario",ic:"📅",label:"Agenda"},
   {id:"inbox",ic:"✉️",label:"Inbox"},
 ];
@@ -1320,7 +1448,9 @@ function go(t){ curTab=t; render(); }
 
 function renderTopbar(){
   const c=myClub();
-  $("tbClub").innerHTML=`${crest(c,34)}<div style="min-width:0"><b>${c.name}</b><div class="meta">${leagueOf(c).name} · ${G.season} · ${G.managerName}</div></div>`;
+  const bc=G.boardConfidence!=null?G.boardConfidence:60;
+  const bcCol=bc>=55?'#3fb950':bc>=30?'#d29922':'#f85149';
+  $("tbClub").innerHTML=`${crest(c,34)}<div style="min-width:0"><b>${c.name}</b><div class="meta">${G.season} · Diretoria <span style="color:${bcCol}">${moodIcon(bc)}${bc}</span></div></div>`;
   $("tbCash").innerHTML=`${fmtMoney(c.balance,c.cur)}<small>Caixa</small>`;
 }
 
@@ -1338,6 +1468,7 @@ function render(){
     case"comp": h=viewComp(); break;
     case"mercado": h=viewMarket(); break;
     case"financas": h=viewFinance(); break;
+    case"base": h=viewBase(); break;
     case"calendario": h=viewCalendar(); break;
     case"inbox": h=viewInbox(); break;
   }
@@ -1526,7 +1657,19 @@ function viewTable(){
     <table><thead><tr><th>#</th><th>Clube</th><th class="tc">J</th><th class="tc">V</th><th class="tc">E</th><th class="tc">D</th><th class="tc">SG</th><th class="tc">P</th><th class="tc">Últ.</th></tr></thead>
     <tbody>${rows}</tbody></table>
   </div>
-  ${scorersCard(L)}`;
+  ${scorersCard(L)}
+  ${totsCard(L)}`;
+}
+function totsCard(L){
+  const played=L.clubIds.some(id=>clubById(id).P>3);
+  if(!played)return"";
+  const t=teamOfSeason(L);
+  const line=(arr)=>arr.map(p=>`<span class="tag" style="margin:2px" onclick="playerCard(${p.id})">${p.name.split(' ').slice(-1)} <b style="color:${ovrColor(p.ovr)}">${p.ovr}</b></span>`).join("");
+  return `<div class="card"><h3 style="margin-top:0">⭐ Seleção da temporada — ${L.name}</h3>
+    <div class="flex wrap" style="gap:4px">${line(t.FW)}</div>
+    <div class="flex wrap" style="gap:4px;margin-top:4px">${line(t.MF)}</div>
+    <div class="flex wrap" style="gap:4px;margin-top:4px">${line(t.DF)}</div>
+    <div class="flex wrap" style="gap:4px;margin-top:4px">${line(t.GK)}</div></div>`;
 }
 function scorersCard(L){
   const ids=L.clubIds;
@@ -1744,6 +1887,31 @@ function viewFinance(){
   ${c.ledger&&c.ledger.length?`<div class="card"><h3 style="margin-top:0">Extrato recente</h3>${c.ledger.slice(0,12).map(t=>`<div class="flex between xs" style="margin:2px 0"><span class="muted">${t.desc}</span><b style="color:${t.amount>=0?'#3fb950':'#f85149'}">${t.amount>=0?'+':'-'}${fmtMoney(Math.abs(t.amount),c.cur)}</b></div>`).join("")}</div>`:''}`;
 }
 
+/* ---------- Base / Juniores (Fase 4) ---------- */
+function viewBase(){
+  const c=myClub();
+  const youth=youthPlayers(c.id).sort((a,b)=>b.pot-a.pot);
+  if(youth.length===0)return `<div class="card"><h2 style="margin-top:0">Base</h2><p class="muted small">Sem jovens no momento. Uma nova safra chega na próxima temporada.</p></div>`;
+  let rows=youth.map(p=>{
+    const potLabel = p.pot>=85?"🌟 Elite":p.pot>=78?"⭐ Alto":p.pot>=70?"Bom":"Promessa";
+    return `<tr>
+      <td><span class="pos" style="background:${POS_COLORS[p.posG]}22;color:${POS_COLORS[p.posG]}">${p.pos}</span></td>
+      <td onclick="playerCard(${p.id})"><b>${p.name}</b><div class="xs muted">${flag(p.nat)} ${p.age}a · ${p.foot[0]}</div></td>
+      <td class="tc"><span class="ovr" style="background:${ovrColor(p.ovr)}22;color:${ovrColor(p.ovr)}">${p.ovr}</span></td>
+      <td class="tc xs">${potLabel}</td>
+      <td class="tr"><button class="btn grn sm" onclick="promoteYouth(${p.id})">⬆️</button></td>
+    </tr>`;
+  }).join("");
+  return `<div class="card">
+    <h2 style="margin-top:0">🎓 Categorias de Base</h2>
+    <p class="muted small">Jovens promessas do ${c.name}. Promova ao elenco principal os que estiverem prontos. A cada temporada chega uma nova safra.</p>
+  </div>
+  <div class="card" style="padding:4px 8px">
+    <table><thead><tr><th>Pos</th><th>Jovem</th><th class="tc">OVR</th><th class="tc">Potencial</th><th class="tr">Promover</th></tr></thead>
+    <tbody>${rows}</tbody></table>
+  </div>`;
+}
+
 /* ---------- Calendário ---------- */
 function viewCalendar(){
   const c=myClub(); const L=leagueOf(c);
@@ -1813,7 +1981,7 @@ function openSaves(){
    ========================================================================== */
 function enterMatch(){
   const nm=myNextFixture(); if(!nm)return;
-  startMatch(nm.fx,nm.L);
+  maybePressConference(()=>startMatch(nm.fx,nm.L));
 }
 function renderMatch(){
   $("matchRoot").innerHTML=`<div class="matchwrap">
@@ -1953,14 +2121,36 @@ function endSeason(){
   const prize = Math.round((tbl.length-pos+1) * (c.cur==="BRL"?1_500_000:600_000) * (L.tier===1?1.4:0.8));
   pushInbox("💰 Premiação", `O clube recebeu ${fmtMoney(prize,c.cur)} pela ${ord(pos)} colocação no ${L.name}.`,"good");
 
+  const review=careerReview(pos);
+  let footer="";
+  if(review.sacked){
+    footer=`<div class="card" style="border-color:#f85149;background:#2a1414"><b style="color:#f85149">🚪 Você foi demitido</b><div class="small">A diretoria do ${c.name} decidiu encerrar seu ciclo após a ${ord(pos)} colocação. Recomece com um novo clube.</div></div>
+      <button class="btn wide" onclick="closeModal();offerNewJobAfterSack()">🔎 Procurar novo clube</button>`;
+  } else if(review.offer){
+    const t=clubById(review.offer);
+    footer=`<div class="card" style="border-color:#58a6ff;background:#13233b"><b style="color:#58a6ff">📈 Proposta de clube maior!</b><div class="small">O ${t.name} (rep ${t.rep}) quer você como técnico para ${G.season+1}.</div></div>
+      <div class="flex" style="gap:8px"><button class="btn grn g" onclick="acceptJob('${t.id}')">Aceitar ${t.name}</button><button class="btn sec g" onclick="startNewSeason()">Ficar no ${c.name}</button></div>`;
+  } else {
+    footer=`<button class="btn wide grn" onclick="startNewSeason()">▶ Iniciar temporada ${G.season+1}</button>`;
+  }
   modal(`<h2>Fim da Temporada ${G.season}</h2>
     <div class="card" style="text-align:center">
-      <div class="muted">Campeão</div><div class="flex center" style="gap:8px;justify-content:center;margin:6px 0">${crest(champ,28)}<b>${champ.name}</b></div>
+      <div class="muted">Campeão do ${L.name}</div><div class="flex center" style="gap:8px;justify-content:center;margin:6px 0">${crest(champ,28)}<b>${champ.name}</b></div>
       <div class="divider"></div>
-      <div class="muted">Sua colocação</div><div style="font-size:24px;font-weight:800">${ord(pos)} lugar</div>
+      <div class="muted">Sua colocação (esperado: ${ord(G.seasonExpectation||pos)})</div><div style="font-size:24px;font-weight:800">${ord(pos)} lugar</div>
       ${pos===1?'<div style="color:#3fb950;font-weight:700;margin-top:6px">🏆 CAMPEÃO!</div>':''}
+      <div class="xs muted" style="margin-top:8px">Confiança da diretoria: ${G.boardConfidence}/100 · Reputação do técnico: ${G.managerRep}/99</div>
     </div>
-    <button class="btn wide grn" onclick="startNewSeason()">▶ Iniciar temporada ${G.season+1}</button>`);
+    ${footer}`);
+}
+function acceptJob(id){ switchClub(id); startNewSeason(); }
+function offerNewJobAfterSack(){
+  // oferece clubes de reputação similar ou menor
+  const cur=myClub();
+  const opts=G.clubs.filter(x=>x.rep<=cur.rep+2 && x.id!==cur.id).sort((a,b)=>b.rep-a.rep).slice(0,8);
+  modal(`<h2 style="margin-top:0">🔎 Clubes interessados</h2>
+    <p class="small muted">Escolha seu próximo destino:</p>
+    ${opts.map(x=>`<div class="clubrow" onclick="acceptJob('${x.id}')">${crest(x,28)}<div class="g"><b>${x.name}</b><div class="xs muted">${leagueById(x.leagueId).name} · rep ${x.rep}</div></div>▶</div>`).join("")}`);
 }
 function ord(n){ return n+"º"; }
 function startNewSeason(){
@@ -1993,7 +2183,9 @@ function startNewSeason(){
   G.date=0; G.window="Pré-temporada";
   autoPickLineup();
   buildCompetitions();
-  pushInbox("🆕 Nova temporada", `Bem-vindo à temporada ${G.season}! Prepare o elenco para os desafios que vêm pela frente.`,"info");
+  youthIntake();
+  G.warned=false; G.seasonExpectation=expectedRank();
+  pushInbox("🆕 Nova temporada", `Temporada ${G.season}! A diretoria espera o ${myClub().name} por volta da ${ord(G.seasonExpectation)} posição. Prepare o elenco.`,"info");
   saveGame(); curTab="elenco"; render();
   toast("Temporada "+G.season+" iniciada!");
 }
@@ -2153,7 +2345,8 @@ window.addEventListener("DOMContentLoaded",boot);
 Object.assign(window,{go,enterMatch,playPause,toggleSpeed,skipToEnd,halftimeContinue,halftimeTactics,doSub,finishMatchFlow,
   setFormation,autoPickLineup,playerCard,closeModal,talkPlayer,talkResp,makeOffer,listPlayer,openSaves,exportSave,importSave,
   renderMktList,endSeason,startNewSeason,confirmStart,pickClub,renderClubPick,showStart,saveGame,loadGame,render,
-  submitOffer,submitLoan,acceptOffer,rejectOffer,byId,advanceComp,advanceCompUI,finishCompMatchFlow});
+  submitOffer,submitLoan,acceptOffer,rejectOffer,byId,advanceComp,advanceCompUI,finishCompMatchFlow,
+  promoteYouth,answerPresser,acceptJob,offerNewJobAfterSack});
 </script>
 </body>
 </html>
