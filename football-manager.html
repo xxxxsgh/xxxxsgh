@@ -435,11 +435,15 @@ function newGame(clubId, managerName){
     const lg={id:L.id,name:L.name,country:L.country,cur:L.cur,tier:L.tier,conf:L.conf,bg:!!L.bg,clubIds:[]};
     leagues.push(lg);
     L.clubs.forEach(cd=>{
+      const cur=L.cur;
+      const sponsor = Math.round(cd.rep*cd.rep*(cur==="BRL"?2600:30000)); // patrocínio anual por reputação
       const club={
-        id:"c"+(cid++), name:cd.name, leagueId:L.id, colors:cd.colors, rep:cd.rep, cur:L.cur,
-        balance: Math.round(cd.rep*cd.rep* (L.cur==="BRL"?9000: 90000) ), // caixa inicial
+        id:"c"+(cid++), name:cd.name, leagueId:L.id, colors:cd.colors, rep:cd.rep, cur,
+        balance: Math.round(cd.rep*cd.rep* (cur==="BRL"?9000: 90000) ), // caixa inicial
         stadium: Math.round(8000 + cd.rep*cd.rep*4.2),
         formation:"4-3-3", mentality:"Equilibrado",
+        sponsor, ledger:[],
+        fin:{gate:0,sponsor:0,prize:0,sales:0,wages:0,buys:0}, // acumulado da temporada
         // tabela
         P:0,W:0,D:0,L:0,GF:0,GA:0,Pts:0, form:[],
       };
@@ -769,8 +773,13 @@ function endMatch(){
   addEv(90, `⏱️ Fim de jogo! ${clubById(M.hId).name} ${M.hs} x ${M.as} ${clubById(M.aId).name}`, "goal");
   // aplica na tabela
   applyResult(M.L, M.fx);
+  // bilheteria do mandante
+  const homeClub=clubById(M.hId);
+  txn(homeClub, gateReceipts(homeClub, clubById(M.aId).rep), "Bilheteria vs "+clubById(M.aId).name, "gate");
   // estatísticas dos jogadores (apps, fitness)
   [...M.hXI,...M.aXI].forEach(p=>{ p.apps++; p.seasonStats.apps++; p.fitness=clamp(p.fitness-ri(8,18),20,100); });
+  // cartões viram suspensão (acúmulo de 3 amarelos / vermelho)
+  [...M.hXI,...M.aXI].forEach(p=>{ if(p.rc>0 && p.ban<=0){ p.ban=ri(1,2); p.rc=0; } else if(p.yc>0 && p.yc%3===0 && p.ban<=0){ p.ban=1; } });
   // moral conforme resultado (clube do jogador)
   const meHome=M.hId===G.clubId, win=(meHome?M.hs>M.as:M.as>M.hs), draw=M.hs===M.as;
   const myXI = meHome?M.hXI:M.aXI;
@@ -874,6 +883,122 @@ function importSave(file){
 
 /* ---------- Inbox ---------- */
 function pushInbox(title,body,kind){ G.inbox.unshift({title,body,kind:kind||"info",read:false,date:G.date}); if(G.inbox.length>60)G.inbox.pop(); }
+
+/* ============================================================================
+   FASE 2 — FINANÇAS + MERCADO DE TRANSFERÊNCIAS + EVOLUÇÃO
+   ========================================================================== */
+function txn(club, amount, desc, cat){
+  club.balance += amount;
+  if(cat && club.fin) club.fin[cat]=(club.fin[cat]||0)+Math.abs(amount);
+  if(club.ledger){ club.ledger.unshift({amount,desc,cat,date:G.date,season:G.season}); if(club.ledger.length>40)club.ledger.pop(); }
+}
+function weeklyWageBill(cid){ return Math.round(clubPlayers(cid).reduce((s,p)=>s+p.wage,0)/52); }
+
+/* Bilheteria — receita por jogo em casa */
+function gateReceipts(club, oppRep){
+  const L=leagueById(club.leagueId);
+  const tablePos = tableOf(L).findIndex(c=>c.id===club.id);
+  const perf = clamp(1 - tablePos*0.025, 0.55, 1);
+  const draw = clamp((club.rep+oppRep)/200, 0.45, 1) * perf * rf(0.9,1.0);
+  const attendance = Math.round(club.stadium * clamp(draw,0.35,1));
+  const ticket = club.cur==="BRL"? rf(45,110): rf(28,75);
+  return Math.round(attendance*ticket);
+}
+
+/* Janela de transferências aberta? */
+function isWindowOpen(){
+  const L=leagueOf(myClub());
+  const r=roundIndexFor(L);
+  const total=G.fixtures[L.id].length;
+  const mid=Math.floor(total/2);
+  if(r<=2){ G.window="Janela de pré-temporada"; return true; }
+  if(r>=mid-1 && r<=mid+1){ G.window="Janela de meio de ano"; return true; }
+  G.window="Janela fechada"; return false;
+}
+
+/* Decisão do clube vendedor sobre uma proposta de COMPRA */
+function clubAcceptsFee(seller, player, fee){
+  const ask = askingPrice(player);
+  if(fee>=ask) return {ok:true};
+  if(fee>=ask*0.85 && chance(0.5)) return {ok:true};
+  // contrapropõe
+  if(fee>=player.value*0.7) return {ok:false, counter:Math.round(ask*rf(0.92,1.0))};
+  return {ok:false, counter:ask};
+}
+function askingPrice(player){
+  // clubes pedem prêmio sobre o valor, maior p/ titulares jovens
+  let mult = 1.15;
+  if(player.age<=23) mult+=0.25;
+  if(player.ovr>=82) mult+=0.2;
+  if(player.pot-player.ovr>=6) mult+=0.15;
+  return Math.round(player.value*mult);
+}
+/* Decisão do JOGADOR sobre proposta salarial e de jogar no clube */
+function playerAcceptsMove(player, buyer, wageOffer){
+  const better = wageOffer/Math.max(1,player.wage);
+  const repGap = buyer.rep - clubById(player.clubId).rep;
+  let p = 0.2;
+  p += clamp((better-1)*0.9, -0.3, 0.6);
+  p += clamp(repGap*0.012, -0.25, 0.4);
+  if(buyer.rep>=85) p+=0.1;
+  return chance(clamp(p,0.05,0.95));
+}
+
+/* Executa transferência permanente */
+function doTransfer(player, buyer, fee, wage, contractYears){
+  const seller=clubById(player.clubId);
+  txn(buyer, -fee, `Compra de ${player.name}`, "buys");
+  if(seller) txn(seller, +fee, `Venda de ${player.name}`, "sales");
+  player.clubId=buyer.id; player.wage=wage; player.contract=contractYears||3;
+  player.listed=false; player.loanFrom=null;
+  G.transferLog.unshift({pl:player.name, from:seller?seller.name:"—", to:buyer.name, fee, season:G.season, cur:buyer.cur});
+  if(G.transferLog.length>50)G.transferLog.pop();
+}
+/* Empréstimo */
+function doLoan(player, buyer, buyOption){
+  const seller=clubById(player.clubId);
+  player.loanFrom=seller.id; player.loanBuy=buyOption||0;
+  player.clubId=buyer.id; player.listed=false;
+  G.transferLog.unshift({pl:player.name, from:seller.name, to:buyer.name+" (emp.)", fee:0, season:G.season, cur:buyer.cur});
+}
+
+/* Mercado vivo: clubes IA negociam entre si quando a janela está aberta */
+function runAIMarket(intensity){
+  intensity=intensity||ri(2,5);
+  for(let t=0;t<intensity;t++){
+    // comprador: clube com bom caixa e boa reputação
+    const buyers=G.clubs.filter(c=>c.id!==G.clubId && c.balance>0).sort((a,b)=>b.rep-a.rep);
+    const buyer=buyers[ri(0,Math.min(12,buyers.length-1))];
+    if(!buyer)continue;
+    const buyerSquad=clubPlayers(buyer.id);
+    if(buyerSquad.length>27)continue;
+    const buyerAvg=buyerSquad.reduce((s,p)=>s+p.ovr,0)/Math.max(1,buyerSquad.length);
+    // alvo: jogador de outro clube que melhora o comprador e cabe no orçamento
+    const budget=buyer.balance*0.6;
+    const pool=G.players.filter(p=>p.clubId!==buyer.id && p.clubId!==G.clubId && !p.loanFrom &&
+       p.ovr>buyerAvg-2 && askingPrice(p)<=budget);
+    if(pool.length===0)continue;
+    const target=pick(pool.slice().sort((a,b)=>b.ovr-a.ovr).slice(0,30));
+    const seller=clubById(target.clubId);
+    if(!seller || clubPlayers(seller.id).length<=20)continue; // não esvazia elenco
+    const fee=askingPrice(target);
+    if(buyer.balance<fee)continue;
+    const wage=Math.round(target.wage*rf(1.05,1.4));
+    if(!playerAcceptsMove(target,buyer,wage))continue;
+    doTransfer(target,buyer,fee,wage,ri(3,5));
+  }
+  // jogadores listados pelo MEU clube recebem propostas da IA
+  clubPlayers(G.clubId).filter(p=>p.listed).forEach(p=>{
+    if(!isWindowOpen())return;
+    if(chance(0.5)){
+      const buyer=pick(G.clubs.filter(c=>c.id!==G.clubId && c.rep>=clubById(p.clubId).rep-8 && c.balance>p.value));
+      if(!buyer)return;
+      const offer=Math.round(p.value*rf(0.85,1.2));
+      pushInbox("💱 Proposta recebida", `${buyer.name} ofereceu ${fmtMoney(offer,myClub().cur)} por ${p.name}. Vá ao Mercado para responder.`, "info");
+      p.pendingOffer={from:buyer.id, fee:offer};
+    }
+  });
+}
 
 /* ============================================================================
    UI
@@ -1158,49 +1283,154 @@ function viewComp(){
   </div>`;
 }
 
-/* ---------- Mercado (Fase 2 — base presente) ---------- */
+/* ---------- Mercado (Fase 2) ---------- */
+let mktPosFilter="ALL", mktMaxOvr=99;
 function viewMarket(){
-  const c=myClub();
-  // alvos: jogadores de outros clubes ordenados por valor (amostra)
-  const targets = G.players.filter(p=>p.clubId!==c.id).sort((a,b)=>b.ovr-a.ovr).slice(0,40);
+  const c=myClub(); isWindowOpen();
+  const open=G.window.indexOf("fechada")<0;
+  // propostas recebidas por meus jogadores listados
+  const offers=clubPlayers(c.id).filter(p=>p.pendingOffer);
+  const listed=clubPlayers(c.id).filter(p=>p.listed);
+  const log=G.transferLog.slice(0,8);
+  const targets = G.players.filter(p=>p.clubId!==c.id && !p.loanFrom).sort((a,b)=>b.ovr-a.ovr).slice(0,40);
   return `<div class="card">
-    <h2 style="margin-top:0">Mercado de Transferências</h2>
-    <div class="flex between small"><span class="muted">Janela: <b>${G.window}</b></span><span class="muted">Caixa: <b>${fmtMoney(c.balance,c.cur)}</b></span></div>
-    <input class="sel" id="mktSearch" placeholder="🔎 Buscar jogador..." oninput="renderMktList(this.value)" style="margin-top:10px">
+    <h2 style="margin-top:0">Mercado</h2>
+    <div class="flex between small"><span class="pill" style="background:${open?'#1d3a24':'#3a1d1d'};color:${open?'#3fb950':'#f85149'}">${open?'🟢':'🔴'} ${G.window}</span><span class="muted">Caixa: <b>${fmtMoney(c.balance,c.cur)}</b></span></div>
+    ${!open?'<div class="xs muted" style="margin-top:6px">Compras/vendas só são confirmadas com a janela aberta (pré-temporada e meio de ano).</div>':''}
+  </div>
+  ${offers.length?`<div class="card"><h3 style="margin-top:0">📨 Propostas recebidas</h3>${offers.map(p=>{const b=clubById(p.pendingOffer.from);return `<div class="flex between center" style="margin:6px 0"><div><b>${p.name}</b> <span class="xs muted">de ${b.name}</span><div class="xs">${fmtMoney(p.pendingOffer.fee,c.cur)}</div></div><div class="flex" style="gap:6px"><button class="btn grn sm" onclick="acceptOffer(${p.id})">Aceitar</button><button class="btn red sm" onclick="rejectOffer(${p.id})">Recusar</button></div></div>`}).join("")}</div>`:''}
+  ${listed.length?`<div class="card"><h3 style="margin-top:0">🏷️ Listados p/ venda</h3>${listed.map(p=>`<div class="flex between small" style="margin:4px 0"><span>${p.name} <span class="xs muted">pedindo ${fmtMoney(askingPrice(p),c.cur)}</span></span><button class="btn sec sm" onclick="byId(${p.id}).listed=false;render()">Retirar</button></div>`).join("")}</div>`:''}
+  <div class="card">
+    <input class="sel" id="mktSearch" placeholder="🔎 Buscar jogador..." oninput="renderMktList(this.value)">
+    <div class="flex" style="gap:6px;margin-top:8px">
+      <select class="sel" onchange="mktPosFilter=this.value;renderMktList(document.getElementById('mktSearch').value)">
+        ${["ALL","GK","DF","MF","FW"].map(x=>`<option value="${x}"${x===mktPosFilter?' selected':''}>${x==="ALL"?"Todas posições":x}</option>`).join("")}</select>
+      <select class="sel" onchange="mktMaxOvr=parseInt(this.value);renderMktList(document.getElementById('mktSearch').value)">
+        ${[99,85,80,75,70].map(x=>`<option value="${x}"${x===mktMaxOvr?' selected':''}>Até OVR ${x}</option>`).join("")}</select>
+    </div>
   </div>
   <div class="card" style="padding:4px 8px" id="mktList">${mktRows(targets)}</div>
-  <div class="muted xs" style="text-align:center;margin-top:8px">Negociações completas (salário, empréstimos, cláusulas, leilão IA) chegam na Fase 2.</div>`;
+  ${log.length?`<div class="card"><h3 style="margin-top:0">🔁 Mercado ao vivo</h3>${log.map(t=>`<div class="xs" style="margin:2px 0">${t.pl}: ${t.from} → <b>${t.to}</b> ${t.fee?'· '+fmtMoney(t.fee,t.cur):''}</div>`).join("")}</div>`:''}`;
 }
 function mktRows(list){
-  return `<table><thead><tr><th>Jogador</th><th class="tc">OVR</th><th class="tr">Valor</th></tr></thead><tbody>${
-    list.map(p=>{const c=clubById(p.clubId);return `<tr onclick="playerCard(${p.id})"><td><b>${p.name}</b><div class="xs muted">${crestSpan(c)} ${flag(p.nat)} ${p.age}a · ${p.pos}</div></td><td class="tc"><span class="ovr" style="background:${ovrColor(p.ovr)}22;color:${ovrColor(p.ovr)}">${p.ovr}</span></td><td class="tr xs nowrap">${fmtMoney(p.value,c.cur)}</td></tr>`}).join("")
+  if(!list.length)return '<div class="muted small" style="padding:10px">Nenhum jogador encontrado.</div>';
+  return `<table><thead><tr><th>Jogador</th><th class="tc">OVR</th><th class="tr">Pedem</th></tr></thead><tbody>${
+    list.map(p=>{const c=clubById(p.clubId);return `<tr onclick="playerCard(${p.id})"><td><b>${p.name}</b><div class="xs muted">${crestSpan(c)} ${flag(p.nat)} ${p.age}a · ${p.pos}</div></td><td class="tc"><span class="ovr" style="background:${ovrColor(p.ovr)}22;color:${ovrColor(p.ovr)}">${p.ovr}</span></td><td class="tr xs nowrap">${fmtMoney(askingPrice(p),c.cur)}</td></tr>`}).join("")
   }</tbody></table>`;
 }
 function crestSpan(c){ return `<span style="display:inline-block;vertical-align:middle">${crest(c,14)}</span>`; }
 function renderMktList(q){
   const c=myClub();
   q=(q||"").toLowerCase();
-  let list=G.players.filter(p=>p.clubId!==c.id && (!q||p.name.toLowerCase().includes(q)));
-  list=list.sort((a,b)=>b.ovr-a.ovr).slice(0,40);
-  $("mktList").innerHTML=mktRows(list);
+  let list=G.players.filter(p=>p.clubId!==c.id && !p.loanFrom && (!q||p.name.toLowerCase().includes(q))
+    && (mktPosFilter==="ALL"||p.posG===mktPosFilter) && p.ovr<=mktMaxOvr);
+  list=list.sort((a,b)=>b.ovr-a.ovr).slice(0,50);
+  const elm=$("mktList"); if(elm)elm.innerHTML=mktRows(list);
 }
-function makeOffer(pid){ toast("Negociações completas chegam na Fase 2 🚧"); }
-function listPlayer(pid){ toast("Lista de transferências chega na Fase 2 🚧"); }
+/* Negociação de compra/empréstimo */
+function makeOffer(pid){
+  const p=byId(pid); const c=myClub(); const seller=clubById(p.clubId);
+  if(p.clubId===G.clubId){toast("Jogador já é seu");return;}
+  if(G.window.indexOf("fechada")>=0 && isWindowOpen()===false){ toast("Janela fechada — aguarde a próxima janela"); return; }
+  const ask=askingPrice(p);
+  closeModal();
+  modal(`<div class="flex between center"><h2 style="margin:0">Negociar — ${p.name}</h2><button class="btn sec sm" onclick="closeModal()">✕</button></div>
+    <div class="small muted">${seller.name} · pede ~${fmtMoney(ask,c.cur)} · seu caixa ${fmtMoney(c.balance,c.cur)}</div>
+    <div class="divider"></div>
+    <h3 style="margin-top:0">Compra definitiva</h3>
+    <label class="xs muted">Valor da proposta (${curSymbol(c.cur)})</label>
+    <input class="sel" id="offFee" type="number" value="${ask}" style="margin-bottom:8px">
+    <label class="xs muted">Salário anual oferecido (atual: ${fmtMoney(p.wage,c.cur)})</label>
+    <input class="sel" id="offWage" type="number" value="${Math.round(p.wage*1.15)}" style="margin-bottom:8px">
+    <label class="xs muted">Anos de contrato</label>
+    <input class="sel" id="offYears" type="number" value="3" min="1" max="6" style="margin-bottom:10px">
+    <button class="btn wide grn" onclick="submitOffer(${pid})">Enviar proposta de compra</button>
+    <div class="divider"></div>
+    <h3 style="margin-top:0">Empréstimo</h3>
+    <label class="xs muted">Opção de compra ao fim (0 = sem opção)</label>
+    <input class="sel" id="loanBuy" type="number" value="0" style="margin-bottom:10px">
+    <button class="btn wide sec" onclick="submitLoan(${pid})">Pedir por empréstimo</button>`);
+}
+function submitOffer(pid){
+  const p=byId(pid); const c=myClub(); const seller=clubById(p.clubId);
+  const fee=Math.max(0,parseInt($("offFee").value)||0);
+  const wage=Math.max(0,parseInt($("offWage").value)||0);
+  const years=clamp(parseInt($("offYears").value)||3,1,6);
+  if(fee>c.balance){ toast("Caixa insuficiente para essa proposta"); return; }
+  const dec=clubAcceptsFee(seller,p,fee);
+  if(!dec.ok){
+    toast(`${seller.name} recusou. Contraproposta: ${fmtMoney(dec.counter,c.cur)}`);
+    $("offFee").value=dec.counter; return;
+  }
+  if(!playerAcceptsMove(p,c,wage)){
+    toast(`${p.name} recusou os termos salariais. Tente oferecer mais.`); return;
+  }
+  doTransfer(p,c,fee,wage,years);
+  autoPickLineup(); saveGame(); closeModal(); render();
+  toast(`✅ ${p.name} é o novo reforço do ${c.name}!`);
+  pushInbox("✅ Contratação", `${p.name} (${p.ovr} OVR) assinou com o ${c.name} por ${fmtMoney(fee,c.cur)}.`,"good");
+}
+function submitLoan(pid){
+  const p=byId(pid); const c=myClub(); const seller=clubById(p.clubId);
+  const buyOpt=Math.max(0,parseInt($("loanBuy").value)||0);
+  // clube aceita emprestar se jogador não é estrela e tem elenco
+  if(p.ovr>=82){ toast(`${seller.name} não empresta um jogador desse nível.`); return; }
+  if(clubPlayers(seller.id).length<=20){ toast(`${seller.name} não tem elenco para emprestar.`); return; }
+  if(!chance(0.7)){ toast(`${seller.name} recusou o empréstimo.`); return; }
+  doLoan(p,c,buyOpt);
+  autoPickLineup(); saveGame(); closeModal(); render();
+  toast(`🤝 ${p.name} chega por empréstimo!`);
+}
+function listPlayer(pid){
+  const p=byId(pid); p.listed=!p.listed; saveGame(); closeModal();
+  toast(p.listed?`${p.name} listado para venda (pedindo ${fmtMoney(askingPrice(p),myClub().cur)})`:`${p.name} retirado da lista`);
+}
+function acceptOffer(pid){
+  const p=byId(pid); const o=p.pendingOffer; if(!o)return;
+  const buyer=clubById(o.from);
+  doTransfer(p,buyer,o.fee,Math.round(p.wage*1.2),4);
+  p.pendingOffer=null;
+  autoPickLineup(); saveGame(); render();
+  toast(`💰 ${p.name} vendido ao ${buyer.name} por ${fmtMoney(o.fee,myClub().cur)}`);
+  pushInbox("💰 Venda concluída", `${p.name} foi vendido ao ${buyer.name} por ${fmtMoney(o.fee,myClub().cur)}.`,"good");
+}
+function rejectOffer(pid){ const p=byId(pid); p.pendingOffer=null; saveGame(); render(); toast("Proposta recusada"); }
 
-/* ---------- Finanças (Fase 2 — resumo presente) ---------- */
+/* ---------- Finanças (Fase 2) ---------- */
 function viewFinance(){
-  const c=myClub();
+  const c=myClub(); const f=c.fin||{};
   const wages=clubPlayers(c.id).reduce((s,p)=>s+p.wage,0);
+  const income=(f.gate||0)+(f.sponsor||0)+(f.prize||0)+(f.sales||0);
+  const expense=(f.wages||0)+(f.buys||0);
+  const net=income-expense;
+  const row=(lbl,val,col)=>`<div class="flex between small" style="margin:5px 0"><span class="muted">${lbl}</span><b style="color:${col}">${val<0?'-':'+'}${fmtMoney(Math.abs(val),c.cur)}</b></div>`;
+  const ffp = c.balance<0 ? `<div class="card" style="border-color:#f85149;background:#2a1414"><b style="color:#f85149">⚠️ Fair Play Financeiro</b><div class="xs">Caixa negativo. Equilibre as contas vendendo jogadores ou cortando salários para evitar punição.</div></div>` : `<div class="card" style="border-color:#1d3a24;background:#0f1f14"><b style="color:#3fb950">✓ Fair Play Financeiro</b><div class="xs">Contas saudáveis. Continue equilibrando receitas e despesas.</div></div>`;
   return `<div class="card">
     <h2 style="margin-top:0">Finanças</h2>
-    <div class="flex between" style="margin:8px 0"><span class="muted">Caixa atual</span><b style="font-size:18px">${fmtMoney(c.balance,c.cur)}</b></div>
+    <div class="flex between" style="margin:8px 0"><span class="muted">Caixa atual</span><b style="font-size:20px;color:${c.balance<0?'#f85149':'#3fb950'}">${fmtMoney(c.balance,c.cur)}</b></div>
+  </div>
+  ${ffp}
+  <div class="card"><h3 style="margin-top:0">Temporada ${G.season} — Receitas</h3>
+    ${row("🎟️ Bilheteria",f.gate||0,"#3fb950")}
+    ${row("🤝 Patrocínio",f.sponsor||0,"#3fb950")}
+    ${row("🏆 Premiações",f.prize||0,"#3fb950")}
+    ${row("💱 Vendas de jogadores",f.sales||0,"#3fb950")}
     <div class="divider"></div>
-    <div class="flex between small" style="margin:4px 0"><span>Folha salarial anual</span><b style="color:#f85149">-${fmtMoney(wages,c.cur)}</b></div>
-    <div class="flex between small" style="margin:4px 0"><span>Reputação do clube</span><b>${c.rep}/100</b></div>
-    <div class="flex between small" style="margin:4px 0"><span>Capacidade do estádio</span><b>${c.stadium.toLocaleString('pt-BR')}</b></div>
+    <div class="flex between"><b>Total receitas</b><b style="color:#3fb950">+${fmtMoney(income,c.cur)}</b></div>
+  </div>
+  <div class="card"><h3 style="margin-top:0">Despesas</h3>
+    ${row("💵 Salários pagos",-(f.wages||0),"#f85149")}
+    ${row("🛒 Compras de jogadores",-(f.buys||0),"#f85149")}
     <div class="divider"></div>
-    <p class="muted small">Bilheteria, premiações por competição, patrocínios e fair play financeiro detalhados chegam na Fase 2.</p>
-  </div>`;
+    <div class="flex between"><b>Total despesas</b><b style="color:#f85149">-${fmtMoney(expense,c.cur)}</b></div>
+    <div class="flex between" style="margin-top:8px"><b>Saldo da temporada</b><b style="color:${net>=0?'#3fb950':'#f85149'}">${net>=0?'+':'-'}${fmtMoney(Math.abs(net),c.cur)}</b></div>
+  </div>
+  <div class="card"><h3 style="margin-top:0">Projeções</h3>
+    <div class="flex between small"><span>Folha salarial anual</span><b>${fmtMoney(wages,c.cur)}</b></div>
+    <div class="flex between small"><span>Patrocínio anual (rep ${c.rep})</span><b>${fmtMoney(c.sponsor,c.cur)}</b></div>
+    <div class="flex between small"><span>Capacidade do estádio</span><b>${c.stadium.toLocaleString('pt-BR')}</b></div>
+  </div>
+  ${c.ledger&&c.ledger.length?`<div class="card"><h3 style="margin-top:0">Extrato recente</h3>${c.ledger.slice(0,12).map(t=>`<div class="flex between xs" style="margin:2px 0"><span class="muted">${t.desc}</span><b style="color:${t.amount>=0?'#3fb950':'#f85149'}">${t.amount>=0?'+':'-'}${fmtMoney(Math.abs(t.amount),c.cur)}</b></div>`).join("")}</div>`:''}`;
 }
 
 /* ---------- Calendário ---------- */
@@ -1371,6 +1601,15 @@ function renderMatchEnd(){
 /* ---------- Avanço de rodada / lesões / suspensões / evolução leve ---------- */
 function advanceAfterRound(){
   G.date++;
+  // folha salarial semanal (todos os clubes)
+  G.clubs.forEach(c=>{ const w=weeklyWageBill(c.id); txn(c,-w,"Salários semanais","wages"); });
+  // patrocínio (creditado em ~38 parcelas ao longo do ano)
+  G.clubs.forEach(c=>{ txn(c, Math.round(c.sponsor/38), "Patrocínio", "sponsor"); });
+  // alerta de fair play financeiro (meu clube)
+  const me=myClub();
+  if(me.balance<0){ pushInbox("⚠️ Finanças no vermelho", `O caixa está negativo (${fmtMoney(me.balance,me.cur)}). Venda jogadores ou controle os gastos para evitar punições do fair play financeiro.`,"bad"); }
+  // janela e mercado vivo da IA
+  if(isWindowOpen()) runAIMarket();
   // recuperação física + lesões/suspensões decrementam
   G.players.forEach(p=>{
     p.fitness=clamp(p.fitness+ri(10,22),0,100);
@@ -1398,9 +1637,9 @@ function endSeason(){
     G.history.unshift({season:G.season, league:L.name, posLabel:ord(pos)+" lugar"});
     if(pos===1){ G.trophies.unshift({name:L.name, season:G.season}); pushInbox("🏆 CAMPEÃO!",`Parabéns! O ${c.name} é CAMPEÃO do ${L.name} de ${G.season}!`,"good"); }
   }
-  // premiação simples por colocação
+  // premiação por colocação (todos os clubes da liga)
+  tbl.forEach((club,i)=>{ const pz=Math.round((tbl.length-i)*(club.cur==="BRL"?1_500_000:600_000)*(L.tier===1?1.4:0.8)); txn(club,pz,"Premiação "+L.name,"prize"); });
   const prize = Math.round((tbl.length-pos+1) * (c.cur==="BRL"?1_500_000:600_000) * (L.tier===1?1.4:0.8));
-  c.balance+=prize;
   pushInbox("💰 Premiação", `O clube recebeu ${fmtMoney(prize,c.cur)} pela ${ord(pos)} colocação no ${L.name}.`,"good");
 
   modal(`<h2>Fim da Temporada ${G.season}</h2>
@@ -1418,6 +1657,22 @@ function startNewSeason(){
   // envelhece, evolui, regens, zera stats
   progressPlayers();
   G.season++;
+  // retorno de empréstimos (com opção de compra)
+  G.players.filter(p=>p.loanFrom).forEach(p=>{
+    if(p.clubId===G.clubId && p.loanBuy>0 && myClub().balance>=p.loanBuy && chance(0.8)){
+      const seller=clubById(p.loanFrom);
+      txn(myClub(),-p.loanBuy,"Opção de compra "+p.name,"buys");
+      if(seller)txn(seller,p.loanBuy,"Venda "+p.name,"sales");
+      pushInbox("✅ Opção exercida",`${p.name} foi comprado em definitivo por ${fmtMoney(p.loanBuy,myClub().cur)}.`,"good");
+      p.loanFrom=null; p.loanBuy=0;
+    } else {
+      const back=clubById(p.loanFrom);
+      if(back){ if(p.clubId===G.clubId)pushInbox("↩️ Fim de empréstimo",`${p.name} retornou ao ${back.name}.`,"info"); p.clubId=p.loanFrom; }
+      p.loanFrom=null; p.loanBuy=0;
+    }
+  });
+  // zera finanças da temporada
+  G.clubs.forEach(c=>{ c.fin={gate:0,sponsor:0,prize:0,sales:0,wages:0,buys:0}; });
   G.players.forEach(p=>{ p.seasonStats={g:0,a:0,apps:0}; p.g=0;p.a=0;p.apps=0;p.yc=0;p.rc=0; });
   G.leagues.forEach(L=>{ buildLeagueSchedule(L); initStandings(L); });
   G.date=0; G.window="Pré-temporada";
@@ -1581,7 +1836,8 @@ window.addEventListener("DOMContentLoaded",boot);
 // expõe funções usadas no HTML inline
 Object.assign(window,{go,enterMatch,playPause,toggleSpeed,skipToEnd,halftimeContinue,halftimeTactics,doSub,finishMatchFlow,
   setFormation,autoPickLineup,playerCard,closeModal,talkPlayer,talkResp,makeOffer,listPlayer,openSaves,exportSave,importSave,
-  renderMktList,tableLeagueId,endSeason,startNewSeason,confirmStart,pickClub,renderClubPick,showStart,saveGame,loadGame,render});
+  renderMktList,endSeason,startNewSeason,confirmStart,pickClub,renderClubPick,showStart,saveGame,loadGame,render,
+  submitOffer,submitLoan,acceptOffer,rejectOffer,byId});
 </script>
 </body>
 </html>
